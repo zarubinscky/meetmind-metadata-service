@@ -1,0 +1,21 @@
+{
+  "name": "meetmind-metadata-service",
+  "version": "1.0.0",
+  "description": "MeetMind AI Metadata Service",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.54.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.1",
+    "express": "^5.1.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "mime-types": "^3.0.1",
+    "multer": "^2.0.2"
+  }
+}

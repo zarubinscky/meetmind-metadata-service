@@ -1,4 +1,5 @@
 Deno.serve(async (request: Request) => {
+  console.log("MEETMIND PRECHECK V1");
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers":

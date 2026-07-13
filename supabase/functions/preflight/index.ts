@@ -75,6 +75,219 @@ Deno.serve(async (request: Request) => {
   try {
     const body = await request.json().catch(() => null);
 
+    const mode = String(body?.mode ?? "initial_check");
+
+if (mode === "duration_check") {
+  const telegramId = body?.telegram_id;
+  const durationSeconds = Number(body?.duration_seconds);
+
+  if (
+    telegramId === undefined ||
+    telegramId === null ||
+    String(telegramId).trim() === ""
+  ) {
+    return jsonResponse(
+      {
+        ok: false,
+        allowed: false,
+        code: "TELEGRAM_ID_REQUIRED",
+        action: {
+          type: "restart_app",
+        },
+        ui: {
+          title: "Не удалось определить пользователя.",
+          action: "Перезапустите приложение.",
+        },
+      },
+      400,
+    );
+  }
+
+  /*
+   * Внутренняя ошибка определения длительности
+   * НЕ блокирует клиентский путь.
+   */
+  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0) {
+    return jsonResponse({
+      ok: true,
+      allowed: true,
+      code: "DURATION_CHECK_SKIPPED",
+      degraded_mode: true,
+      action: {
+        type: "continue_processing",
+      },
+      ui: {
+        title: "Продолжаем обработку записи.",
+        action: "Пожалуйста, подождите.",
+      },
+    });
+  }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+
+  if (!supabaseUrl || !serviceRoleKey) {
+    /*
+     * Внутренняя проблема сервера также не должна
+     * блокировать рабочий pipeline.
+     */
+    console.error("SUPABASE_ENV_NOT_CONFIGURED_DURATION_CHECK");
+
+    return jsonResponse({
+      ok: true,
+      allowed: true,
+      code: "BALANCE_CHECK_SKIPPED",
+      degraded_mode: true,
+      action: {
+        type: "continue_processing",
+      },
+      ui: {
+        title: "Продолжаем обработку записи.",
+        action: "Пожалуйста, подождите.",
+      },
+    });
+  }
+
+  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+    },
+  });
+
+  const { data: user, error } = await supabase
+    .from("users")
+    .select(
+      "telegram_id, plan, minutes_limit, minutes_used, paid_minutes, subscription_until, language",
+    )
+    .eq("telegram_id", telegramId)
+    .maybeSingle();
+
+  if (error || !user) {
+    console.error("DURATION_USER_LOOKUP_FAILED", error);
+
+    /*
+     * Ошибка нашей инфраструктуры — пропускаем дальше.
+     * Пользователя не блокируем.
+     */
+    return jsonResponse({
+      ok: true,
+      allowed: true,
+      code: "BALANCE_CHECK_SKIPPED",
+      degraded_mode: true,
+      action: {
+        type: "continue_processing",
+      },
+      ui: {
+        title: "Продолжаем обработку записи.",
+        action: "Пожалуйста, подождите.",
+      },
+    });
+  }
+
+  const durationMinutes = Math.ceil(durationSeconds / 60);
+  const minutesLimit = Number(user.minutes_limit ?? 0);
+  const minutesUsed = Number(user.minutes_used ?? 0);
+  const remainingMinutes = Math.max(0, minutesLimit - minutesUsed);
+
+  if (durationMinutes > 90) {
+    return jsonResponse({
+      ok: true,
+      allowed: false,
+      code: "DURATION_LIMIT_EXCEEDED",
+      duration: {
+        seconds: durationSeconds,
+        required_minutes: durationMinutes,
+      },
+      limits: {
+        max_duration_minutes: 90,
+      },
+      action: {
+        type: "choose_another_file",
+      },
+      ui: {
+        title: "Запись длиннее 90 минут.",
+        action: "Выберите более короткий файл.",
+      },
+    });
+  }
+
+  if (remainingMinutes === 0) {
+    return jsonResponse({
+      ok: true,
+      allowed: false,
+      code: "ZERO_BALANCE",
+      duration: {
+        seconds: durationSeconds,
+        required_minutes: durationMinutes,
+      },
+      balance: {
+        remaining_minutes: 0,
+      },
+      action: {
+        type: "top_up",
+      },
+      ui: {
+        title: "Минуты закончились.",
+        action: "Пополните баланс.",
+      },
+    });
+  }
+
+  if (remainingMinutes < durationMinutes) {
+    return jsonResponse({
+      ok: true,
+      allowed: false,
+      code: "INSUFFICIENT_MINUTES",
+      duration: {
+        seconds: durationSeconds,
+        required_minutes: durationMinutes,
+      },
+      balance: {
+        remaining_minutes: remainingMinutes,
+        missing_minutes: durationMinutes - remainingMinutes,
+      },
+      action: {
+        type: "top_up",
+      },
+      ui: {
+        title: "Недостаточно минут.",
+        action: "Пополните баланс.",
+      },
+    });
+  }
+
+  const afterProcessingMinutes = remainingMinutes - durationMinutes;
+  const lowBalance = afterProcessingMinutes < 90;
+
+  return jsonResponse({
+    ok: true,
+    allowed: true,
+    code: lowBalance ? "ALLOWED_LOW_BALANCE" : "ALLOWED",
+    duration: {
+      seconds: durationSeconds,
+      required_minutes: durationMinutes,
+    },
+    balance: {
+      remaining_minutes: remainingMinutes,
+      after_processing_minutes: afterProcessingMinutes,
+      is_low_after_processing: lowBalance,
+    },
+    action: {
+      type: lowBalance ? "continue_and_offer_top_up" : "continue_processing",
+    },
+    ui: lowBalance
+      ? {
+          title: "Файл принят в обработку.",
+          action: "После обработки пополните минуты.",
+        }
+      : {
+          title: "Файл принят в обработку.",
+          action: "Пожалуйста, подождите.",
+        },
+  });
+}
+
     const telegramId = body?.telegram_id;
     const fileName = String(body?.file_name ?? "").trim();
     const fileSizeBytes = Number(body?.file_size_bytes);

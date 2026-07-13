@@ -17,31 +17,6 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-function getServerKey(): string {
-  // Новый формат ключей Supabase
-  const secretKeysJson = Deno.env.get("SUPABASE_SECRET_KEYS");
-
-  if (secretKeysJson) {
-    const secretKeys = JSON.parse(secretKeysJson);
-    const firstKey = Object.values(secretKeys)[0];
-
-    if (typeof firstKey === "string" && firstKey.length > 0) {
-      return firstKey;
-    }
-  }
-
-  // Совместимость с legacy-проектами
-  const legacyKey =
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ??
-    Deno.env.get("SUPABASE_SECRET_KEY");
-
-  if (!legacyKey) {
-    throw new Error("SUPABASE_SERVER_KEY_NOT_CONFIGURED");
-  }
-
-  return legacyKey;
-}
-
 Deno.serve(async (request: Request) => {
   console.log("MEETMIND PREFLIGHT V1.1");
 
@@ -49,7 +24,6 @@ Deno.serve(async (request: Request) => {
     return new Response("ok", { headers: corsHeaders });
   }
 
-  // Открытие ссылки в браузере остаётся healthcheck
   if (request.method === "GET") {
     return jsonResponse({
       ok: true,
@@ -63,7 +37,7 @@ Deno.serve(async (request: Request) => {
     return jsonResponse(
       {
         ok: false,
-        code: "METHOD_NOT_ALLOWED",
+        reason: "method_not_allowed",
         message: "Используйте POST-запрос.",
       },
       405,
@@ -82,20 +56,31 @@ Deno.serve(async (request: Request) => {
       return jsonResponse(
         {
           ok: false,
-          code: "TELEGRAM_ID_REQUIRED",
-          message: "Не удалось определить пользователя. Перезапустите приложение.",
+          reason: "telegram_id_required",
+          message:
+            "Не удалось определить пользователя. Перезапустите приложение.",
         },
         400,
       );
     }
 
     const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
 
-    if (!supabaseUrl) {
-      throw new Error("SUPABASE_URL_NOT_CONFIGURED");
+    if (!supabaseUrl || !serviceRoleKey) {
+      console.error("SUPABASE_ENV_NOT_CONFIGURED");
+
+      return jsonResponse(
+        {
+          ok: false,
+          reason: "server_error",
+          message: "Сервис временно недоступен. Попробуйте ещё раз.",
+        },
+        500,
+      );
     }
 
-    const supabase = createClient(supabaseUrl, getServerKey(), {
+    const supabase = createClient(supabaseUrl, serviceRoleKey, {
       auth: {
         persistSession: false,
         autoRefreshToken: false,
@@ -105,18 +90,18 @@ Deno.serve(async (request: Request) => {
     const { data: user, error } = await supabase
       .from("users")
       .select(
-        "telegram_id, plan, minutes_limit, minutes_used, paid_minutes, subscription_until",
+        "telegram_id, plan, minutes_limit, minutes_used, paid_minutes, subscription_until, language",
       )
-      .eq("telegram_id", String(telegramId))
+      .eq("telegram_id", telegramId)
       .maybeSingle();
 
     if (error) {
-      console.error("USER_LOOKUP_ERROR", error);
+      console.error("USER_LOOKUP_FAILED", error);
 
       return jsonResponse(
         {
           ok: false,
-          code: "USER_LOOKUP_FAILED",
+          reason: "user_lookup_failed",
           message: "Не удалось проверить баланс. Попробуйте ещё раз.",
         },
         500,
@@ -127,7 +112,7 @@ Deno.serve(async (request: Request) => {
       return jsonResponse(
         {
           ok: false,
-          code: "USER_NOT_FOUND",
+          reason: "user_not_found",
           message: "Пользователь не найден. Сначала запустите бота.",
         },
         404,
@@ -145,14 +130,15 @@ Deno.serve(async (request: Request) => {
       user: {
         telegram_id: String(user.telegram_id),
         plan: user.plan ?? null,
+        language: user.language ?? null,
+        subscription_until: user.subscription_until ?? null,
+      },
+      balance: {
         minutes_limit: minutesLimit,
         minutes_used: minutesUsed,
         paid_minutes: Number(user.paid_minutes ?? 0),
         remaining_minutes: remainingMinutes,
-        subscription_until: user.subscription_until ?? null,
-      },
-      balance: {
-        is_zero: remainingMinutes <= 0,
+        is_zero: remainingMinutes === 0,
         is_low: remainingMinutes > 0 && remainingMinutes < 90,
       },
     });
@@ -162,7 +148,7 @@ Deno.serve(async (request: Request) => {
     return jsonResponse(
       {
         ok: false,
-        code: "INTERNAL_ERROR",
+        reason: "server_error",
         message: "Сервис временно недоступен. Попробуйте ещё раз.",
       },
       500,

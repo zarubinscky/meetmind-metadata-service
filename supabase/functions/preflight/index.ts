@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const MAX_FILE_SIZE_BYTES = 1024 * 1024 * 1024; // 1 ГБ
+const MAX_DURATION_MINUTES = 90;
 const LOW_BALANCE_THRESHOLD_MINUTES = 90;
 
 const SUPPORTED_FORMATS = new Set([
@@ -190,17 +191,17 @@ if (mode === "duration_check") {
   const minutesUsed = Number(user.minutes_used ?? 0);
   const remainingMinutes = Math.max(0, minutesLimit - minutesUsed);
 
-  if (durationMinutes > 90) {
+  if (durationMinutes > MAX_DURATION_MINUTES) {
     return jsonResponse({
       ok: true,
       allowed: false,
-      code: "DURATION_LIMIT_EXCEEDED",
+      code:  "FILE_TOO_LONG",
       duration: {
         seconds: durationSeconds,
         required_minutes: durationMinutes,
       },
       limits: {
-        max_duration_minutes: 90,
+        max_duration_minutes: MAX_DURATION_MINUTES,
       },
       action: {
         type: "choose_another_file",
@@ -495,7 +496,7 @@ if (mode === "duration_check") {
       limits: {
         max_file_size_bytes: MAX_FILE_SIZE_BYTES,
         max_file_size_mb: 1024,
-        max_duration_minutes: 90,
+        max_duration_minutes: MAX_DURATION_MINUTES,
       },
       next: "duration_check",
     });
